@@ -1,0 +1,5 @@
+Drivers/
+Middlewares/
+startup_stm32l412xx.s
+STM32L412XX_FLASH.ld
+

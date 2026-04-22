@@ -1,0 +1,3 @@
+#!/bin/sh
+
+sudo gdb -x debug.gdb
