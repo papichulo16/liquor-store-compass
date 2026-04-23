@@ -22,7 +22,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "project.h"
 
+#include <stdio.h>
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -74,6 +77,13 @@ void StartDefaultTask(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+int __io_putchar(int ch)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, 100);
+    return ch;
+}
+
 
 /* USER CODE END 0 */
 
@@ -416,16 +426,43 @@ static void MX_GPIO_Init(void)
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
+
+
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+
+    osDelay(1000);
+
+    bool ver =  gy271m_verify(&hi2c1);
+    printf("[main.c] GY271M VERIFY %s\r\n", ver ? "GOOD" : "!!! BAD !!!");
+
+    if (!ver)
+      continue;
+
+    bool init =  gy271m_init(&hi2c1);
+    printf("[main.c] GY271M INIT %s\r\n", init ? "GOOD" : "!!! BAD !!!");
+
+    if (!init)
+      continue;
+
+    int16_t x, y, z;
+
+    gy271m_read(&hi2c1, &x, &y, &z);
+    
+    printf("[main.c] Orientaion read --- x: %d, y: %d, z: %d\r\n", x, y, z);
+
+    float heading = gy271m_heading(x,y,z);
+    printf("[main.c] Orientation heading: %f\r\n", heading);
+    printf("[main.c] Orientation heading: %d\r\n", (int) heading);
   }
   /* USER CODE END 5 */
 }
+
+
 
 /**
   * @brief  Period elapsed callback in non blocking mode
