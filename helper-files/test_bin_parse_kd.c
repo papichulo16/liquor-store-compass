@@ -7,6 +7,9 @@
 
 #define NAME_MAX_BYTES 32
 
+#define MILES_PER_LAT_DEGREE  69.0
+#define MILES_PER_LON_DEGREE  54.6  
+
 typedef struct {
     double lat;
     double lon;
@@ -18,6 +21,14 @@ typedef struct kd_node_t {
     struct kd_node_t* left;
     struct kd_node_t* right;
 } kd_node_t;
+
+double flat_distance_miles(double lat1, double lon1, double lat2, double lon2) {
+
+    double dlat = (lat2 - lat1) * MILES_PER_LAT_DEGREE;
+    double dlon = (lon2 - lon1) * MILES_PER_LON_DEGREE;
+
+    return sqrt(dlat * dlat + dlon * dlon);
+}
 
 kd_node_t* read_node(FILE *f) {
 
