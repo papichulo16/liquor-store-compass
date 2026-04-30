@@ -13,7 +13,7 @@ Core processing: `STM32L412KB`
 
 I2C Components: `GY-271M Magnetometer`
 
-SPI Components: `W25W64 SPI Flash Memory`, `LCD Screen`
+SPI Components: `W25W64 SPI Flash Memory`, `ST7796S LCD Screen`
 
 UART Components: `NEO-6M GPS Satellite Positioning Module`
 

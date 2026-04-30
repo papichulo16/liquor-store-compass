@@ -12,7 +12,7 @@
 #define GY271M_DATA_REG   0x03
 #define GY271M_CONTINUOUS 0x00
 
-#define OFFSET_DEG  210.0f  
+#define OFFSET_DEG  0.0f  
 
 bool gy271m_verify(I2C_HandleTypeDef* i2c) {
 
@@ -92,19 +92,23 @@ bool gy271m_read(I2C_HandleTypeDef* i2c, int16_t *x, int16_t *y, int16_t *z)
     return true;
 }
 
-
-float gy271m_heading(int16_t x, int16_t y, int16_t z)
-{
+float gy271m_heading(int16_t x, int16_t y, int16_t z) {
     (void)z;
 
-    float heading = atan2f((float)y, (float)x) * (180.0f / M_PI);
+    float x_f = (float)x - (-179.0f);
+    float y_f = (float)y - (-1812.0f);
+
+    x_f /= 301.0f;
+    y_f /= 257.0f;
+
+    float heading = atan2f(x_f, -y_f) * (180.0f / M_PI);
+
     heading += OFFSET_DEG;
 
-    if (heading < 0)    
-      heading += 360.0f;
-
-    if (heading >= 360) 
-      heading -= 360.0f;
+    if (heading < 0)
+        heading += 360.0f;
+    if (heading >= 360.0f)
+        heading -= 360.0f;
 
     return heading;
 }

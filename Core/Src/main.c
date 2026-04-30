@@ -26,6 +26,8 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,6 +38,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define RX_BUFFER_SIZE 1024
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,11 +49,15 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c3;
 
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim16;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -60,18 +68,39 @@ const osThreadAttr_t defaultTask_attributes = {
 };
 /* USER CODE BEGIN PV */
 
+osThreadId_t orientation_task_handle;
+const osThreadAttr_t orientation_task_attributes = {
+  .name = "orientation_task",
+  .stack_size = 128 * 8,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+
+uint8_t g_rxbuf[RX_BUFFER_SIZE];
+
+float g_lat = 28.065804;
+float g_lon = -80.620512;
+//float g_lat = 0.0f;
+//float g_lon = 0.0f;
+
+MahonyState g_mahony;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_I2C3_Init(void);
+static void MX_TIM16_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
+
+void orientation_task(void* args);
 
 /* USER CODE END PFP */
 
@@ -116,15 +145,48 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_I2C3_Init();
+  MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
 
-  ST7796S_Init(&hspi1);
-  //ILI9341_WriteString(&hspi1,);
-  ST7796S_FillScreen(&hspi1, 0xf800);
+  HAL_TIM_Base_Start_IT(&htim16);
+
+  //ST7796S_Init(&hspi1);
+  //ST7796S_FillScreen(&hspi1, 0xf800);
+
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, g_rxbuf, RX_BUFFER_SIZE);
+
+  bool ver =  gy271m_verify(&hi2c1);
+  printf("[main.c] GY271M VERIFY %s\r\n", ver ? "GOOD" : "!!! BAD !!!");
+
+  if (!ver)
+    while(1);
+
+  bool init =  gy271m_init(&hi2c1);
+  printf("[main.c] GY271M INIT %s\r\n", init ? "GOOD" : "!!! BAD !!!");
+
+  if (!init)
+    while(1);
+
+  init = MPU6050_init(&hi2c3);
+  printf("[main.c] MPU6050 INIT %s\r\n", init ? "GOOD" : "!!! BAD !!!");
+
+  if (!init)
+    while(1);
+
+  uint32_t ret;
+  uint16_t test = 0;
+
+  ret = w25qxx_init(&hspi1);
+  
+  printf("[main.c] W25QXX init %s --- exit code %x\r\n", ret == W25QXX_OK ? "OK" : "!!! FAIL !!!", ret );
+
+  Mahony_Init(&g_mahony);
 
   /* USER CODE END 2 */
 
@@ -144,7 +206,7 @@ int main(void)
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  //gps_q = osMessageQueueNew(1, RX_BUFFER_SIZE, NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -152,7 +214,7 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  orientation_task_handle = osThreadNew(orientation_task, NULL, &orientation_task_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -278,6 +340,54 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief I2C3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x00B07CB4;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
+
+}
+
+/**
   * @brief SPI1 Initialization Function
   * @param None
   * @retval None
@@ -318,6 +428,38 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief TIM16 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM16_Init(void)
+{
+
+  /* USER CODE BEGIN TIM16_Init 0 */
+
+  /* USER CODE END TIM16_Init 0 */
+
+  /* USER CODE BEGIN TIM16_Init 1 */
+
+  /* USER CODE END TIM16_Init 1 */
+  htim16.Instance = TIM16;
+  htim16.Init.Prescaler = 319;
+  htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim16.Init.Period = 999;
+  htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim16.Init.RepetitionCounter = 0;
+  htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM16_Init 2 */
+
+  /* USER CODE END TIM16_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -333,7 +475,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 9600;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -388,6 +530,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -427,10 +585,125 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/*
+  
+  for(;;)
+  {
+
+    w25qxx_read_device_id(&hspi1, &test);
+    printf("[main.c] DEVICE ID %x\r\n", test);
+
+    osDelay(1500);
+  }
+*/
+
+void parse_gprmc(char *sentence) {
+    if (strncmp((char *) g_rxbuf, "$GPRMC", 6)) return;
+    //printf("[main.c] parsing GPRMC\r\n");
+    //printf("%s\r\n", sentence);
+
+    char *token;
+    char buf[100];
+    strncpy(buf, sentence, sizeof(buf));
+
+    int field = 0;
+    float lat = 0, lon = 0;
+    char latDir, lonDir, status;
+
+    token = strtok(buf, ",");
+    while (token != NULL) {
+        switch (field) {
+            case 2: status  = token[0]; break;  // A = valid, V = invalid
+            case 3: lat     = atof(token); break;
+            case 4: latDir  = token[0]; break;
+            case 5: lon     = atof(token); break;
+            case 6: lonDir  = token[0]; break;
+        }
+        token = strtok(NULL, ",");
+        field++;
+    }
+
+    if (status != 'A') return;  // No GPS fix yet
+
+    int latDeg = (int)(lat / 100);
+    float latMin = lat - latDeg * 100;
+    float latitude  = latDeg + latMin / 60.0f;
+    if (latDir == 'S') latitude  = -latitude;
+
+    int lonDeg = (int)(lon / 100);
+    float lonMin = lon - lonDeg * 100;
+    float longitude = lonDeg + lonMin / 60.0f;
+    if (lonDir == 'W') longitude = -longitude;
+
+    //taskENTER_CRITICAL();
+
+    g_lat = latitude;
+    g_lon = longitude;
+
+    //taskEXIT_CRITICAL();
+
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+
+    if (huart->Instance == USART1) {
+
+        if (!strncmp((char *) g_rxbuf, "$GPRMC", 6)) {
+
+          parse_gprmc((char *) g_rxbuf);
+        }
+
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart1, g_rxbuf, RX_BUFFER_SIZE);
+    }
+
+}
+
+void orientation_task(void* args) {
+
+  while(1) {
+
+    int16_t x, y, z;
+
+    gy271m_read(&hi2c1, &x, &y, &z);
+    
+    //printf("[main.c] Orientaion read --- x: %d, y: %d, z: %d\r\n", x, y, z);
+
+    float heading = gy271m_heading(x,y,z);
+    //printf("[main.c] Orientation heading: %d\r\n", (int) (heading));
+
+    osDelay(1000);
+  }
+}
 
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
+void handle_gps_log() {
+
+  if (g_lat == 0.0f && g_lon == 0.0f) {
+
+    printf("[main.c] WAITING FOR SATELLITE FIX... PLEASE WAIT 5-15 MIN\r\n");
+    return;
+  }
+
+  printf("[main.c] GPS LAT %d --- LON %d\r\n", (int) (g_lat * 1000000), (int) (g_lon * 1000000));
+
+/*
+  location_t* test = find_nearest(g_lat, g_lon);
+
+  printf("NEAREST LIQUOR STORE: %d, %d\r\n", (int) (test->lat * 10000000), (int) (test->lon * 10000000));
+  printf("DISTANCE %d\r\n", (int) (distance_miles(g_lat, g_lon, test->lat, test->lon) * 100));
+*/
+
+}
+
+void handle_orientation_log() {
+
+  float h = Mahony_GetHeading(&g_mahony);
+
+  printf("[main.c] orientation: %d\r\n", (int) h);
+}
+
 /**
   * @brief  Function implementing the defaultTask thread.
   * @param  argument: Not used
@@ -441,21 +714,14 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
-  uint32_t ret;
-  uint16_t test = 0;
+  for(;;) {
 
-  ret = w25qxx_init(&hspi1);
-  
-  printf("[main.c] W25QXX init %s --- exit code %x\r\n", ret == W25QXX_OK ? "OK" : "!!! FAIL !!!", ret );
-  
-  for(;;)
-  {
-
-    w25qxx_read_device_id(&hspi1, &test);
-    printf("[main.c] DEVICE ID %x\r\n", test);
-
-    osDelay(1500);
+    handle_gps_log();
+    handle_orientation_log();
+    
+    osDelay(500);
   }
+
   /* USER CODE END 5 */
 }
 
@@ -478,6 +744,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
   /* USER CODE BEGIN Callback 1 */
 
+    if (htim->Instance != TIM16) return;
+
+    float gx, gy, gz;  // From your gyro driver,  in radians/sec
+    float ax, ay, az;  // From your accel driver,  any unit
+    int16_t raw_mx, raw_my, raw_mz;  // From your mag driver,    any unit
+
+    MPU6050_Read_Gyro(&hi2c3, &gx, &gy, &gz);
+    MPU6050_Read_Accel(&hi2c3, &ax, &ay, &az);
+    gy271m_read(&hi2c1, &raw_mx, &raw_my, &raw_mz);
+
+    float mx = (float) raw_mx - (MAG_X_MIN + MAG_X_MAX) / 2.0f;  // = raw_mx - (-179.0f)
+    float my = (float) raw_my - (MAG_Y_MIN + MAG_Y_MAX) / 2.0f;  // = raw_my - (-1812.0f)
+    float mz = (float) raw_mz;  // No Z calibration data, pass through as-is
+
+    Mahony_Update(&g_mahony, gx, gy, gz, ax, ay, az, mx, my, mz, 0.01f);
   /* USER CODE END Callback 1 */
 }
 

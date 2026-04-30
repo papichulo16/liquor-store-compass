@@ -34,6 +34,8 @@ def write_kd_tree(node, f):
 
     lat, lon, name = node["point"]
 
+    print("{" + f"{lat}, {lon}, \"{name}\"" + "}, ")
+
     has_left = 1 if node["left"]  is not None else 0
     has_right = 1 if node["right"] is not None else 0
 
