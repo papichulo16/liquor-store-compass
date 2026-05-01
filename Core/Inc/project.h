@@ -127,4 +127,5 @@ float Mahony_GetHeading(MahonyState *s);
 void LCD_Init(void);
 void LCD_Print(const char *str);
 void LCD_Set_Cursor(uint8_t row, uint8_t col);
+void LCD_Clear();
 

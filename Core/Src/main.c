@@ -804,6 +804,7 @@ void StartDefaultTask(void *argument)
   /* Infinite loop */
   for(;;) {
 
+    LCD_Clear();
     handle_gps_log();
     
     osDelay(500);

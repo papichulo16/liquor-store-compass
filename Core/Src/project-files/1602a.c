@@ -61,3 +61,12 @@ void LCD_Set_Cursor(uint8_t row, uint8_t col) {
     LCD_Command(0x80 | (addr + col));
 }
 
+void LCD_Clear() {
+
+  LCD_Set_Cursor(0, 0);
+  LCD_Print("                 ");
+  LCD_Set_Cursor(1, 0);
+  LCD_Print("                 ");
+  LCD_Set_Cursor(0, 0);
+}
+
