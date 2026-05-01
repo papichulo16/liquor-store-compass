@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define GYRO_SENSITIVITY 131.0f   // ±250  dps range
+#define ACCEL_SENSITIVITY 16384.0f  // ±2g range
+
 #define MAG_X_MIN (-480.0f)
 #define MAG_X_MAX  (122.0f)
 #define MAG_Y_MIN (-2069.0f)
@@ -114,8 +117,14 @@ void ST7796S_InvertColors(SPI_HandleTypeDef* spi, bool invert);
 location_t* find_nearest(double lat, double lon);
 double distance(double lat1, double lon1, double lat2, double lon2);
 double distance_miles(double lat1, double lon1, double lat2, double lon2);
+const char* format_distance(double miles);
+const char* get_bearing(double lat1, double lon1, double lat2, double lon2);
 
 void Mahony_Init(MahonyState *state);
 void Mahony_Update(MahonyState *s, float gx, float gy, float gz, float ax, float ay, float az, float mx, float my, float mz, float dt);
 float Mahony_GetHeading(MahonyState *s);
+
+void LCD_Init(void);
+void LCD_Print(const char *str);
+void LCD_Set_Cursor(uint8_t row, uint8_t col);
 

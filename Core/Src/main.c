@@ -23,11 +23,13 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "project.h"
+#include "Fusion.h"
 
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -39,6 +41,7 @@
 /* USER CODE BEGIN PD */
 
 #define RX_BUFFER_SIZE 1024
+#define SAMPLE_RATE 100  // Hz, must match your timer
 
 /* USER CODE END PD */
 
@@ -63,26 +66,33 @@ DMA_HandleTypeDef hdma_usart1_rx;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 128 * 8,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
 
-osThreadId_t orientation_task_handle;
-const osThreadAttr_t orientation_task_attributes = {
-  .name = "orientation_task",
+osThreadId_t lookup_task_handle;
+const osThreadAttr_t lookup_task_attributes = {
+  .name = "lookup_task",
   .stack_size = 128 * 8,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 
 uint8_t g_rxbuf[RX_BUFFER_SIZE];
 
+location_t* g_target = NULL;
+
+// temporary hardcoded @ florida tech
 float g_lat = 28.065804;
 float g_lon = -80.620512;
+
 //float g_lat = 0.0f;
 //float g_lon = 0.0f;
 
 MahonyState g_mahony;
+
+FusionAhrs ahrs;
+FusionBias offset;
 
 /* USER CODE END PV */
 
@@ -100,7 +110,7 @@ void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
-void orientation_task(void* args);
+void lookup_task(void* args);
 
 /* USER CODE END PFP */
 
@@ -159,6 +169,16 @@ int main(void)
   //ST7796S_Init(&hspi1);
   //ST7796S_FillScreen(&hspi1, 0xf800);
 
+  printf("[main.c] LCD init\r\n");
+  LCD_Init();
+
+  LCD_Set_Cursor(0,0);
+  LCD_Print("Welcome to");
+  LCD_Set_Cursor(1,0);
+  LCD_Print("Liquor Compass");
+
+  HAL_Delay(10000);
+
   HAL_UARTEx_ReceiveToIdle_DMA(&huart1, g_rxbuf, RX_BUFFER_SIZE);
 
   bool ver =  gy271m_verify(&hi2c1);
@@ -214,7 +234,7 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  orientation_task_handle = osThreadNew(orientation_task, NULL, &orientation_task_attributes);
+  lookup_task_handle = osThreadNew(lookup_task, NULL, &lookup_task_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -574,12 +594,19 @@ static void MX_GPIO_Init(void)
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
-  GPIO_InitStruct.Pin = GPIO_PIN_1 | GPIO_PIN_3 | GPIO_PIN_4;
+  GPIO_InitStruct.Pin = GPIO_PIN_5 | GPIO_PIN_3 | GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;   // Push-pull output
   GPIO_InitStruct.Pull = GPIO_NOPULL;           // No pull-up/down
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_5 | GPIO_PIN_0 | GPIO_PIN_1;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;   // Push-pull output
+  GPIO_InitStruct.Pull = GPIO_NOPULL;           // No pull-up/down
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
@@ -596,6 +623,38 @@ static void MX_GPIO_Init(void)
     osDelay(1500);
   }
 */
+
+void compass_init(void)
+{
+    FusionBiasInitialise(&offset);
+    FusionAhrsInitialise(&ahrs);
+
+    const FusionAhrsSettings settings = {
+        .convention          = FusionConventionNwu,  // North-West-Up
+        .gain                = 0.5f,                 // Like Kp, lower = smoother
+        .gyroscopeRange      = 2000.0f,              // Match your gyro's configured DPS range
+        .accelerationRejection= 10.0f,
+        .magneticRejection   = 10.0f,
+        .recoveryTriggerPeriod= 5 * SAMPLE_RATE,
+    };
+    FusionAhrsSetSettings(&ahrs, &settings);
+}
+
+float compass_get_heading(void)
+{
+    // Let Fusion do the tilt-compensated compass heading directly
+    // This is more reliable than extracting yaw from Euler angles
+    const FusionQuaternion quat = FusionAhrsGetQuaternion(&ahrs);
+    const FusionVector earth    = FusionAhrsGetEarthAcceleration(&ahrs);
+
+    FusionEuler euler = FusionQuaternionToEuler(quat);
+
+    float heading = euler.angle.yaw;
+    if (heading < 0.0f)    heading += 360.0f;
+    if (heading >= 360.0f) heading -= 360.0f;
+
+    return heading;
+}
 
 void parse_gprmc(char *sentence) {
     if (strncmp((char *) g_rxbuf, "$GPRMC", 6)) return;
@@ -658,35 +717,69 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 
 }
 
-void orientation_task(void* args) {
+void update_target() {
+
+  location_t* l;
+
+  if (g_lat == 0.0f && g_lon == 0.0f)
+    return;
+
+  l = find_nearest(g_lat, g_lon);
+
+  if (!g_target || l->lat != g_target->lat || l->lon != g_target->lon) {
+
+    g_target = l;
+
+    printf("[main.c] new target found\r\n");
+  }
+}
+
+void lookup_task(void* args) {
+
 
   while(1) {
 
-    int16_t x, y, z;
-
-    gy271m_read(&hi2c1, &x, &y, &z);
-    
-    //printf("[main.c] Orientaion read --- x: %d, y: %d, z: %d\r\n", x, y, z);
-
-    float heading = gy271m_heading(x,y,z);
-    //printf("[main.c] Orientation heading: %d\r\n", (int) (heading));
-
-    osDelay(1000);
+      update_target();
+  
+      osDelay(1500);
   }
 }
 
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
+
+void handle_orientation_log() {
+
+  LCD_Set_Cursor(0,0);
+  LCD_Print("Dis: ");
+  
+  double d = distance_miles(g_lat, g_lon, g_target->lat, g_target->lon);
+  LCD_Print(format_distance(d));
+
+  LCD_Set_Cursor(1,0);
+  LCD_Print("Bear:");
+
+  char* b = get_bearing(g_lat, g_lon, g_target->lat, g_target->lon);
+  LCD_Print(b);
+
+}
+
 void handle_gps_log() {
 
   if (g_lat == 0.0f && g_lon == 0.0f) {
 
-    printf("[main.c] WAITING FOR SATELLITE FIX... PLEASE WAIT 5-15 MIN\r\n");
+    printf("[main.c] WAITING FOR SATELLITE FIX...\r\n");
+    
+    LCD_Set_Cursor(0,0);
+    LCD_Print("Waiting for");
+    LCD_Set_Cursor(1,0);
+    LCD_Print("satellite fix...");
     return;
   }
 
   printf("[main.c] GPS LAT %d --- LON %d\r\n", (int) (g_lat * 1000000), (int) (g_lon * 1000000));
+  printf("[main.c] GPS TARGET LAT %d --- LON %d\r\n", (int) (g_target->lat * 1000000), (int) (g_target->lon * 1000000));
 
 /*
   location_t* test = find_nearest(g_lat, g_lon);
@@ -694,15 +787,10 @@ void handle_gps_log() {
   printf("NEAREST LIQUOR STORE: %d, %d\r\n", (int) (test->lat * 10000000), (int) (test->lon * 10000000));
   printf("DISTANCE %d\r\n", (int) (distance_miles(g_lat, g_lon, test->lat, test->lon) * 100));
 */
+  handle_orientation_log();
 
 }
 
-void handle_orientation_log() {
-
-  float h = Mahony_GetHeading(&g_mahony);
-
-  printf("[main.c] orientation: %d\r\n", (int) h);
-}
 
 /**
   * @brief  Function implementing the defaultTask thread.
@@ -717,7 +805,6 @@ void StartDefaultTask(void *argument)
   for(;;) {
 
     handle_gps_log();
-    handle_orientation_log();
     
     osDelay(500);
   }
@@ -748,17 +835,40 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
     float gx, gy, gz;  // From your gyro driver,  in radians/sec
     float ax, ay, az;  // From your accel driver,  any unit
-    int16_t raw_mx, raw_my, raw_mz;  // From your mag driver,    any unit
+    int16_t raw_mx, raw_my, raw_mz;
 
     MPU6050_Read_Gyro(&hi2c3, &gx, &gy, &gz);
     MPU6050_Read_Accel(&hi2c3, &ax, &ay, &az);
     gy271m_read(&hi2c1, &raw_mx, &raw_my, &raw_mz);
 
-    float mx = (float) raw_mx - (MAG_X_MIN + MAG_X_MAX) / 2.0f;  // = raw_mx - (-179.0f)
-    float my = (float) raw_my - (MAG_Y_MIN + MAG_Y_MAX) / 2.0f;  // = raw_my - (-1812.0f)
-    float mz = (float) raw_mz;  // No Z calibration data, pass through as-is
+    // Hard iron correction
+    float mx = (float)raw_mx - (MAG_X_MIN + MAG_X_MAX) / 2.0f;
+    float my = (float)raw_my - (MAG_Y_MIN + MAG_Y_MAX) / 2.0f;
+    float mz = (float)raw_mz;
 
-    Mahony_Update(&g_mahony, gx, gy, gz, ax, ay, az, mx, my, mz, 0.01f);
+    float gx_dps = (float)gx / GYRO_SENSITIVITY;
+    float gy_dps = (float)gy / GYRO_SENSITIVITY;
+    float gz_dps = (float)gz / GYRO_SENSITIVITY;
+
+    float ax_g = (float)ax / ACCEL_SENSITIVITY;
+    float ay_g = (float)ay / ACCEL_SENSITIVITY;
+    float az_g = (float)az / ACCEL_SENSITIVITY;
+
+    // Fill in your gyro values in degrees/sec (NOT radians for this library)
+    FusionVector gyroscope     = { .axis = { gx_dps, gy_dps, gz_dps }};
+
+    // Fill in your accelerometer values in g
+    FusionVector accelerometer = { .axis = { ax_g, ay_g, az_g }};
+
+    // Magnetometer (calibrated)
+    FusionVector magnetometer  = { .axis = { mx, my, mz }};
+
+    // Gyro offset correction (handles bias drift)
+    gyroscope = FusionBiasUpdate(&offset, gyroscope);
+
+    // Update filter
+    FusionAhrsUpdate(&ahrs, gyroscope, accelerometer, magnetometer, 1.0f / SAMPLE_RATE);
+
   /* USER CODE END Callback 1 */
 }
 

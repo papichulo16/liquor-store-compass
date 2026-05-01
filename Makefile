@@ -82,6 +82,10 @@ Core/Src/project-files/coords.c \
 Core/Src/project-files/st7796s.c \
 Core/Src/project-files/fonts.c \
 Core/Src/project-files/mahony.c \
+Core/Src/project-files/1602a.c \
+Core/Src/project-files/FusionAhrs.c \
+Core/Src/project-files/FusionBias.c \
+Core/Src/project-files/FusionCompass.c \
 Core/Src/syscalls.c
 
 # ASM sources
